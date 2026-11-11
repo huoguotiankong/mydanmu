@@ -8,3 +8,5 @@
 - Check deployment logs and the `/api/v2/search/anime?keyword=...` route after upgrades; a successful build alone does not establish that external source fetches work.
 
 This file documents the fork's deployment arrangement and can be used to trigger the initial Git push deployment without altering application code.
+
+- Verified a documentation-only GitHub push to test Vercel's automatic deployments.
