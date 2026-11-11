@@ -1,44 +1,72 @@
-name: Fork Sync
-
-permissions:
-    contents: write
+name: Safe Upstream Sync
 
 on:
-    schedule:
-        - cron: "0 0 * * *"  # 每天午夜执行
-    workflow_dispatch:  # 允许手动触发
+  schedule:
+    # 11:23 Beijing time (03:23 UTC), daily
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
 
 jobs:
-    sync_with_upstream:
-        name: Sync with Upstream
-        runs-on: ubuntu-latest
-        if: ${{ github.event.repository.fork }}
+  sync:
+    name: Test upstream before updating main
+    if: ${{ github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout fork main (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
 
-        steps:
-            - name: Checkout target repo
-              uses: actions/checkout@v5
-              with:
-                token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/huangxd-/danmu_api.git
+          git fetch --no-tags upstream main
 
-            - name: Sync Upstream
-              uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.3
-              with:
-                  target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-                  upstream_sync_repo: huangxd-/danmu_api
-                  upstream_sync_branch: main
-                  target_sync_branch: main
-                  test_mode: false
+      - name: Merge upstream without committing
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "No new upstream commits"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Do not discard fork-specific commits. A conflict stops this workflow.
+          git merge --no-commit --no-ff upstream/main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
-            - name: Check for new commits
-              if: success()
-              run: echo "Sync completed successfully"
+      - name: Setup Node.js 24
+        if: steps.merge.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
 
-            - name: Check for Failure
-              if: failure()
-              run: |
-                  echo "[Error] Sync failed. This might be due to:"
-                  echo "1. Changes in the upstream workflow file"
-                  echo "2. Merge conflicts that need manual resolution"
-                  echo "3. Network issues"
-                  echo "Please check the logs and consider manual sync if needed."
-                  exit 1
+      - name: Install dependencies
+        if: steps.merge.outputs.changed == 'true'
+        run: npm install --no-audit --no-fund
+
+      - name: Run upstream tests
+        if: steps.merge.outputs.changed == 'true'
+        run: npm test
+
+      - name: Commit tested upstream changes
+        if: steps.merge.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git commit -m "chore: sync tested upstream main"
+          # Abort rather than overwrite concurrent changes on main.
+          git push origin HEAD:main
